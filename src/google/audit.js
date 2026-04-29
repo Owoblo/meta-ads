@@ -17,17 +17,34 @@ async function listAccessibleAccounts() {
   return res.data.resourceNames || [];
 }
 
+async function listChildAccounts(mccId = MCC_ID) {
+  const query = `
+    SELECT
+      customer_client.id,
+      customer_client.descriptive_name,
+      customer_client.currency_code,
+      customer_client.time_zone,
+      customer_client.manager,
+      customer_client.status,
+      customer_client.level
+    FROM customer_client
+    WHERE customer_client.level = 1
+  `;
+  return search(mccId, query, mccId);
+}
+
 async function getAccountDetails(customerId, loginId = MCC_ID) {
   const token = await getAccessToken();
   const id = customerId.replace(/-/g, '').replace('customers/', '');
   const loginCustomerId = (loginId || '').replace(/-/g, '');
-  const res = await axios.get(`${BASE_URL}/customers/${id}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'developer-token': DEVELOPER_TOKEN,
-      'login-customer-id': loginCustomerId,
-    },
-  });
+  const hdrs = {
+    Authorization: `Bearer ${token}`,
+    'developer-token': DEVELOPER_TOKEN,
+  };
+  if (loginCustomerId && loginCustomerId !== id) {
+    hdrs['login-customer-id'] = loginCustomerId;
+  }
+  const res = await axios.get(`${BASE_URL}/customers/${id}`, { headers: hdrs });
   return res.data;
 }
 
@@ -96,42 +113,37 @@ async function getKeywords(customerId, loginId = MCC_ID) {
 
 async function runFullAudit() {
   console.log('=== GOOGLE ADS ACCOUNT AUDIT ===\n');
+  console.log(`MCC: ${MCC_ID}\n`);
 
-  // Step 1: list accessible accounts
-  console.log('Fetching accessible accounts...');
-  let resourceNames;
+  // Step 1: list child accounts under MCC
+  console.log('Fetching child accounts under MCC...');
+  let children;
   try {
-    resourceNames = await listAccessibleAccounts();
+    children = await listChildAccounts();
   } catch (err) {
-    handleError('listAccessibleAccounts', err);
+    handleError('listChildAccounts', err);
     return;
   }
 
-  console.log(`\nFound ${resourceNames.length} accessible account(s):\n`);
+  if (!children.length) {
+    console.log('No child accounts found under MCC. Make sure accounts are linked.');
+    return;
+  }
 
-  for (const rn of resourceNames) {
-    const id = rn.replace('customers/', '');
+  console.log(`\nFound ${children.length} child account(s):\n`);
+
+  for (const row of children) {
+    const cc = row.customerClient;
+    const id = String(cc.id);
     console.log(`\n${'─'.repeat(60)}`);
-    console.log(`Account: ${rn}`);
+    console.log(`Account ID: ${id}`);
+    console.log(`  Name:     ${cc.descriptiveName || '(no name)'}`);
+    console.log(`  Type:     ${cc.manager ? 'MANAGER' : 'CLIENT'}`);
+    console.log(`  Currency: ${cc.currencyCode || '?'}`);
+    console.log(`  Timezone: ${cc.timeZone || '?'}`);
+    console.log(`  Status:   ${cc.status || '?'}`);
 
-    // Get account details
-    let details;
-    try {
-      details = await getAccountDetails(id);
-      const desc = details.descriptiveName || '(no name)';
-      const currency = details.currencyCode || '?';
-      const tz = details.timeZone || '?';
-      const isMgr = details.manager ? 'MANAGER' : 'CLIENT';
-      console.log(`  Name:     ${desc}`);
-      console.log(`  Type:     ${isMgr}`);
-      console.log(`  Currency: ${currency}`);
-      console.log(`  Timezone: ${tz}`);
-    } catch (err) {
-      console.log(`  [Could not fetch details: ${err.message}]`);
-      continue;
-    }
-
-    if (details.manager) {
+    if (cc.manager) {
       console.log('  (Skipping campaign data for manager account)');
       continue;
     }
